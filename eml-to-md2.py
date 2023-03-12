@@ -33,7 +33,7 @@ with open(os.path.join(email_directory, "Errors.txt"), "w") as error_file:
             email_date = datetime.strptime(msg["Date"], "%a, %d %b %Y %H:%M:%S %z")
 
             # Generate strings for file name and content
-            date_string = email_date.strftime("%Y-%m-%d %H-%M-%S")
+            date_string = f"({email_date.strftime('%Y-%m-%d')}) {email_date.strftime('%H-%M-%S')}"
             sender_string = re.sub("[^0-9a-zA-Z]+", "-", email_from)
             subject_string = re.sub("[^0-9a-zA-Z]+", "-", email_subject)
 

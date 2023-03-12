@@ -1,95 +1,80 @@
 import os
-import email
-import markdown
-import shutil
+import re
+import hashlib
+from email import message_from_file
 from datetime import datetime
-from dateutil import parser
-from dateutil import tz
 
-# Folder path containing .eml files
-folder_path = '/Users/knight/Desktop/Imported/Sent Items.mbox/eml'
+# Set directory paths
+email_directory = "/Users/knight/Desktop/Imported/Tony @ Entelechy Design.mbox/eml"
 
-# Create attachments folder if it doesn't exist
-attachments_folder = os.path.join(folder_path, 'attachments')
-if not os.path.exists(attachments_folder):
-    os.makedirs(attachments_folder)
+# Create directories if they don't exist
+attachments_directory = os.path.join(email_directory, "Attachments")
+os.makedirs(attachments_directory, exist_ok=True)
 
-# Create 'done' folder if it doesn't exist
-done_folder = os.path.join(folder_path, 'done')
-if not os.path.exists(done_folder):
-    os.makedirs(done_folder)
+markdown_directory = os.path.join(email_directory, "MD")
+os.makedirs(markdown_directory, exist_ok=True)
 
-# Function to remove illegal characters from filename
-def clean_filename(filename):
-    cleaned = ''.join(c if c.isalnum() or c in [' ', '.', '_'] else '_' for c in filename)
-    return cleaned.strip()
+eml_directory = os.path.join(email_directory, "EML")
+os.makedirs(eml_directory, exist_ok=True)
 
-# Loop through all .eml files in the folder
-for filename in os.listdir(folder_path):
-    if filename.endswith('.eml'):
+# Open the error log file for writing
+with open(os.path.join(email_directory, "Errors.txt"), "w") as error_file:
+    for filename in os.listdir(email_directory):
+        if not filename.endswith(".eml"):
+            continue
+
         try:
-            # Parse email message
-            with open(os.path.join(folder_path, filename), 'rb') as f:
-                try:
-                    # Try decoding with UTF-8 first
-                    contents = f.read().decode('utf-8')
-                except UnicodeDecodeError:
-                    # Fall back to binary decoding
-                    f.seek(0)
-                    contents = f.read()
-                if isinstance(contents, bytes):
-                    msg = email.message_from_bytes(contents)
-                else:
-                    msg = email.message_from_string(contents)
+            with open(os.path.join(email_directory, filename), "r", encoding="utf-8") as email_file:
+                msg = message_from_file(email_file)
 
-            # Extract date, sender, and subject from email message
-            date_str = msg['Date']
-            sender = msg['From']
-            subject = msg['Subject']
+            # Extract header information
+            email_from = msg["From"]
+            email_subject = msg["Subject"]
+            email_date = datetime.strptime(msg["Date"], "%a, %d %b %Y %H:%M:%S %z")
 
-            # Convert email body to markdown
-            body = ''
+            # Generate strings for file name and content
+            date_string = f"({email_date.strftime('%Y-%m-%d')}) {email_date.strftime('%H-%M-%S')}"
+            sender_string = re.sub("[^0-9a-zA-Z]+", "-", email_from)
+            subject_string = re.sub("[^0-9a-zA-Z]+", "-", email_subject)
+
+            # Generate markdown content
+            markdown_content = f"# {email_subject}\n\n"
             for part in msg.walk():
-                if part.get_content_type() == 'text/plain':
-                    body += part.get_payload()
-                elif part.get_content_maintype() == 'multipart':
-                    continue
-                else:
-                    # Download attachment and create link
-                    filename = part.get_filename()
-                    if filename:
-                        filepath = os.path.join(attachments_folder, filename)
-                        with open(filepath, 'wb') as f:
-                            f.write(part.get_payload(decode=True))
-                        link = f"[{filename}]({filename})"
-                        body += f"\n\n{link}"
+                if part.get_content_type() == "text/plain":
+                    markdown_content += part.get_payload()
+                elif part.get_content_type().startswith("image/"):
+                    # Save attachments to Attachments directory and update markdown content
+                    attachment_name = part.get_filename()
+                    attachment_path = os.path.join(attachments_directory, attachment_name)
 
-            body = markdown.markdown(body)
+                    # If an attachment with the same name exists, check for equality
+                    if os.path.isfile(attachment_path):
+                        with open(attachment_path, "rb") as existing_file:
+                            existing_file_content = existing_file.read()
+                            existing_file_hash = hashlib.sha256(existing_file_content).hexdigest()
 
-            # Parse date string into datetime object
-            try:
-                date = parser.parse(date_str)
-                date = date.astimezone(tz.tzlocal()).replace(tzinfo=None)
-            except (ValueError, TypeError):
-                with open('error.log', 'a') as logfile:
-                    logfile.write(f"Error parsing date for file {filename}\n")
-                continue
+                        part_hash = hashlib.sha256(part.get_payload(decode=True)).hexdigest()
 
-            # Format date as (YYYY-MM-DD) HH:MM:SS
-            date_str = f"({date.strftime('%Y-%m-%d')}) {date.strftime('%H-%M-%S')}"
+                        if existing_file_hash == part_hash:
+                            markdown_content += f"\n\n[Attachment: {attachment_name}]({attachment_path})"
+                            continue
+                        else:
+                            name, extension = os.path.splitext(attachment_name)
+                            attachment_name = f"{name}-1{extension}"
 
-            # Clean up filename
-            sender_cleaned = clean_filename(sender)
-            subject_cleaned = clean_filename(subject)
-            new_filename = f"{date_str} - {sender_cleaned} - {subject_cleaned}.md"
+                    with open(attachment_path, "wb") as attachment_file:
+                        attachment_file.write(part.get_payload(decode=True))
 
-            # Write markdown file
-            with open(os.path.join(folder_path, new_filename), 'w') as f:
-                f.write(body)
+                    markdown_content += f"\n\n[Attachment: {attachment_name}]({os.path.relpath(attachment_path, markdown_directory)})"
 
-            # Move processed .eml file to 'done' folder
-            shutil.move(os.path.join(folder_path, filename), os.path.join(done_folder, filename))
+            # Create markdown file
+            markdown_filename = f"{date_string} - [{sender_string}] - [{subject_string}].md"
+            with open(os.path.join(markdown_directory, markdown_filename), "w", encoding="utf-8") as markdown_file:
+                markdown_file.write(markdown_content)
 
+            # Move eml file to EML directory
+            os.rename(os.path.join(email_directory, filename), os.path.join(eml_directory, filename))
         except Exception as e:
-            with open('error.log', 'a') as logfile:
-                logfile.write(f"Error processing file {filename}: {e}\n")
+
+            # Log error and continue with next file
+            error_file.write(f"{filename}: {e}\n")
